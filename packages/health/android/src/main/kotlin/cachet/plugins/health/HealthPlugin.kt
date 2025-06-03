@@ -87,8 +87,21 @@ const val WORKOUT = "WORKOUT"
 
 const val TOTAL_CALORIES_BURNED = "TOTAL_CALORIES_BURNED"
 
+private val REQUEST_CODE_GOOGLE_FIT_PERMISSIONS = 1001
+
 
 class HealthPlugin(private var channel: MethodChannel? = null) :
+    companion object {
+    private var currentActivity: Activity? = null
+
+    fun setActivity(activity: Activity) {
+        currentActivity = activity
+    }
+
+    fun getActivity(): Activity? {
+        return currentActivity
+    }
+}
     MethodCallHandler, ActivityResultListener, Result, ActivityAware, FlutterPlugin {
     private var mResult: Result? = null
     private var handler: Handler? = null
@@ -669,56 +682,32 @@ class HealthPlugin(private var channel: MethodChannel? = null) :
      * Requests authorization for the HealthDataTypes with the the READ or READ_WRITE permission
      * type.
      */
-    private fun requestAuthorization(call: MethodCall, result: Result) {
-        if (context == null) {
-            result.success(false)
-            return
-        }
-
-        val args = call.arguments as HashMap<*, *>
-        val types = (args["types"] as? ArrayList<*>)?.filterIsInstance<String>()!!
-        val permissions = (args["permissions"] as? ArrayList<*>)?.filterIsInstance<Int>()!!
-
-        val permList = mutableListOf<String>()
-        for ((i, typeKey) in types.withIndex()) {
-            if (!mapToType.containsKey(typeKey)) {
-                Log.w(
-                    "FLUTTER_HEALTH::ERROR",
-                    "Datatype $typeKey not found in HC"
-                )
-                result.success(false)
-                return
-            }
-            val access = permissions[i]!!
-            val dataType = mapToType[typeKey]!!
-            if (access == 0) {
-                permList.add(
-                    HealthPermission.getReadPermission(dataType),
-                )
-            } else {
-                permList.addAll(
-                    listOf(
-                        HealthPermission.getReadPermission(
-                            dataType
-                        ),
-                        HealthPermission.getWritePermission(
-                            dataType
-                        ),
-                    ),
-                )
-            }
-        }
-        if (healthConnectRequestPermissionsLauncher == null) {
-            result.success(false)
-            Log.i("FLUTTER_HEALTH", "Permission launcher not found")
-            return
-        }
-
-        // Store the result to be called in [onHealthConnectPermissionCallback]
-        mResult = result
-        isReplySubmitted = false
-        healthConnectRequestPermissionsLauncher!!.launch(permList.toSet())
+    private fun requestAuthorization(call: MethodCall, result: MethodChannel.Result) {
+    val activity = getActivity()
+    if (activity == null) {
+        result.error("NO_ACTIVITY", "No activity context available", null)
+        return
     }
+
+    // Parse arguments
+    val types = call.argument<List<String>>("types")?.map { stringToHealthDataType(it) } ?: emptyList()
+    val permissions = call.argument<List<Int>>("permissions")?.map { HealthDataAccess.values()[it] } ?: emptyList()
+
+    // Use activity for Google Fit authorization
+    if (Platform.isAndroid) {
+        val signInOptions = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestScopes(Scope(Scopes.FITNESS_ACTIVITY_READ))
+            .build()
+        val client = GoogleSignIn.getClient(activity, signInOptions)
+        val signInIntent = client.signInIntent
+        activity.startActivityForResult(signInIntent, REQUEST_CODE_GOOGLE_FIT_PERMISSIONS)
+
+        // Store the result for later use in onActivityResult
+        this.result = result
+    } else {
+        result.error("PLATFORM_ERROR", "Only supported on Android", null)
+    }
+}
 
     /** Get all datapoints of the DataType within the given time range */
     private fun getData(call: MethodCall, result: Result) {
